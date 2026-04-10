@@ -165,33 +165,33 @@
       if (s.trail.length > trailLen) s.trail.splice(0, s.trail.length - trailLen);
     }
 
-    // Collisions
+    // Collisions — always merge into stars[i], splice stars[j] (higher index)
     for (let i = 0; i < stars.length; i++) {
       for (let j = i + 1; j < stars.length; j++) {
         const a = stars[i], b = stars[j];
         const dx = b.x - a.x, dy = b.y - a.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < a.radius + b.radius) {
-          // Merge into a (the more massive one)
-          const big = a.mass >= b.mass ? a : b;
-          const small = a.mass >= b.mass ? b : a;
-          const totalMass = big.mass + small.mass;
-          // Conserve momentum
-          big.vx = (big.vx * big.mass + small.vx * small.mass) / totalMass;
-          big.vy = (big.vy * big.mass + small.vy * small.mass) / totalMass;
-          big.x = (big.x * big.mass + small.x * small.mass) / totalMass;
-          big.y = (big.y * big.mass + small.y * small.mass) / totalMass;
-          big.mass = totalMass;
-          big.radius = massToRadius(totalMass);
-          big.color = massToColor(totalMass);
-          // Flash
-          flashes.push({ x: big.x, y: big.y, r: big.radius * 3, life: 1 });
-          // Remove small
-          const idx = stars.indexOf(small);
-          stars.splice(idx, 1);
-          if (idx <= i) i--;
+          const totalMass = a.mass + b.mass;
+          a.vx = (a.vx * a.mass + b.vx * b.mass) / totalMass;
+          a.vy = (a.vy * a.mass + b.vy * b.mass) / totalMass;
+          a.x = (a.x * a.mass + b.x * b.mass) / totalMass;
+          a.y = (a.y * a.mass + b.y * b.mass) / totalMass;
+          a.mass = totalMass;
+          a.radius = massToRadius(totalMass);
+          a.color = massToColor(totalMass);
+          flashes.push({ x: a.x, y: a.y, r: a.radius * 3, life: 1 });
+          stars.splice(j, 1);
           j--;
         }
+      }
+    }
+
+    // NaN guard — remove any star with corrupted state
+    for (let i = stars.length - 1; i >= 0; i--) {
+      const s = stars[i];
+      if (isNaN(s.x) || isNaN(s.y) || isNaN(s.vx) || isNaN(s.vy) || isNaN(s.mass)) {
+        stars.splice(i, 1);
       }
     }
   }
