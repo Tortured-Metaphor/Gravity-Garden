@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Gravity Garden</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; touch-action: none; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #hud {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    display: flex; align-items: center; justify-content: center; gap: 18px;
+    padding: 10px 16px; background: rgba(10,10,15,0.85);
+    border-top: 1px solid rgba(255,255,255,0.08);
+    font: 13px/1 -apple-system, system-ui, sans-serif; color: #aab;
+    z-index: 10; flex-wrap: wrap;
+  }
+  #hud label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #hud input[type=range] {
+    width: 90px; accent-color: #f8c56d; height: 4px;
+  }
+  #hud button {
+    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
+    color: #dde; padding: 5px 14px; border-radius: 4px; cursor: pointer; font: inherit;
+  }
+  #hud button:active { background: rgba(255,255,255,0.18); }
+  #hud span { min-width: 32px; text-align: center; }
+  @media (max-width: 500px) {
+    #hud { gap: 10px; padding: 8px 10px; font-size: 12px; }
+    #hud input[type=range] { width: 64px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <label>Trails <input type="range" id="trailSlider" min="0" max="1" step="0.01" value="0.6"></label>
+  <label>Speed <input type="range" id="speedSlider" min="0.1" max="3" step="0.1" value="1"></label>
+  <button id="clearBtn">Clear</button>
+  <span id="countDisplay">0</span>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const trailSlider = document.getElementById('trailSlider');
+  const speedSlider = document.getElementById('speedSlider');
+  const clearBtn = document.getElementById('clearBtn');
+  const countDisplay = document.getElementById('countDisplay');
+
+  let W, H, dpr;
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // --- Camera ---
+  let camX = 0, camY = 0, camZoom = 1;
+
+  function screenToWorld(sx, sy) {
+    return [(sx - W / 2) / camZoom + camX, (sy - H / 2) / camZoom + camY];
+  }
+
+  // --- Stars ---
+  const G = 800;
+  const SOFTENING = 8;
+  const MAX_VEL = 600;
+  const stars = [];
+  const flashes = [];
+
+  function massToRadius(m) { return Math.pow(m, 0.4) * 1.8; }
+
+  function massToColor(m) {
+    if (m < 30) return { r: 180, g: 200, b: 255 };       // blue-white
+    if (m < 80) return { r: 255, g: 210, b: 100 };       // gold
+    if (m < 200) return { r: 255, g: 140, b: 50 };       // orange
+    return { r: 255, g: 80, b: 40 };                      // deep red
+  }
+
+  function colorStr(c, a) { return `rgba(${c.r},${c.g},${c.b},${a !== undefined ? a : 1})`; }
+
+  function createStar(x, y, vx, vy, mass) {
+    return {
+      x, y, vx: vx || 0, vy: vy || 0,
+      ax: 0, ay: 0, mass,
+      radius: massToRadius(mass),
+      color: massToColor(mass),
+      trail: []
+    };
+  }
+
+  function addRandomStar(wx, wy, massOverride, zeroVel) {
+    const mass = massOverride || (8 + Math.random() * 40);
+    const vx = zeroVel ? 0 : (Math.random() - 0.5) * 40;
+    const vy = zeroVel ? 0 : (Math.random() - 0.5) * 40;
+    stars.push(createStar(wx, wy, vx, vy, mass));
+  }
+
+  // Seed 3 random stars
+  for (let i = 0; i < 3; i++) {
+    const x = (Math.random() - 0.5) * 300;
+    const y = (Math.random() - 0.5) * 300;
+    addRandomStar(x, y);
+  }
+
+  // --- Physics (Velocity Verlet) ---
+  function computeAccelerations() {
+    for (let i = 0; i < stars.length; i++) {
+      stars[i].ax = 0; stars[i].ay = 0;
+    }
+    for (let i = 0; i < stars.length; i++) {
+      for (let j = i + 1; j < stars.length; j++) {
+        const a = stars[i], b = stars[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const distSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
+        const dist = Math.sqrt(distSq);
+        const F = G * a.mass * b.mass / distSq;
+        const fx = F * dx / dist, fy = F * dy / dist;
+        a.ax += fx / a.mass; a.ay += fy / a.mass;
+        b.ax -= fx / b.mass; b.ay -= fy / b.mass;
+      }
+    }
+    // Tilt force
+    if (tiltX !== 0 || tiltY !== 0) {
+      const tiltStrength = 60;
+      for (let i = 0; i < stars.length; i++) {
+        stars[i].ax += tiltX * tiltStrength;
+        stars[i].ay += tiltY * tiltStrength;
+      }
+    }
+  }
+
+  function clampVel(s) {
+    const v = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
+    if (v > MAX_VEL) { s.vx *= MAX_VEL / v; s.vy *= MAX_VEL / v; }
+  }
+
+  function step(dt) {
+    // Velocity Verlet: half-step velocity, full-step position
+    for (const s of stars) {
+      s.vx += s.ax * dt * 0.5;
+      s.vy += s.ay * dt * 0.5;
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+    }
+    computeAccelerations();
+    for (const s of stars) {
+      s.vx += s.ax * dt * 0.5;
+      s.vy += s.ay * dt * 0.5;
+      clampVel(s);
+    }
+
+    // Trails
+    const trailLen = Math.floor(20 + trailSlider.value * 180);
+    for (const s of stars) {
+      s.trail.push({ x: s.x, y: s.y });
+      if (s.trail.length > trailLen) s.trail.splice(0, s.trail.length - trailLen);
+    }
+
+    // Collisions
+    for (let i = 0; i < stars.length; i++) {
+      for (let j = i + 1; j < stars.length; j++) {
+        const a = stars[i], b = stars[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < a.radius + b.radius) {
+          // Merge into a (the more massive one)
+          const big = a.mass >= b.mass ? a : b;
+          const small = a.mass >= b.mass ? b : a;
+          const totalMass = big.mass + small.mass;
+          // Conserve momentum
+          big.vx = (big.vx * big.mass + small.vx * small.mass) / totalMass;
+          big.vy = (big.vy * big.mass + small.vy * small.mass) / totalMass;
+          big.x = (big.x * big.mass + small.x * small.mass) / totalMass;
+          big.y = (big.y * big.mass + small.y * small.mass) / totalMass;
+          big.mass = totalMass;
+          big.radius = massToRadius(totalMass);
+          big.color = massToColor(totalMass);
+          // Flash
+          flashes.push({ x: big.x, y: big.y, r: big.radius * 3, life: 1 });
+          // Remove small
+          const idx = stars.indexOf(small);
+          stars.splice(idx, 1);
+          if (idx <= i) i--;
+          j--;
+        }
+      }
+    }
+  }
+
+  // --- Render ---
+  function draw() {
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // Fade background (trail effect)
+    const fadeAlpha = 0.04 + (1 - trailSlider.value) * 0.25;
+    ctx.fillStyle = `rgba(10,10,15,${fadeAlpha})`;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(camZoom, camZoom);
+    ctx.translate(-camX, -camY);
+
+    // Trails
+    for (const s of stars) {
+      if (s.trail.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(s.trail[0].x, s.trail[0].y);
+      for (let i = 1; i < s.trail.length; i++) {
+        ctx.lineTo(s.trail[i].x, s.trail[i].y);
+      }
+      ctx.strokeStyle = colorStr(s.color, 0.35);
+      ctx.lineWidth = Math.max(1, s.radius * 0.5);
+      ctx.stroke();
+    }
+
+    // Stars
+    for (const s of stars) {
+      // Glow
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.radius * 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = colorStr(s.color, 0.12);
+      ctx.fill();
+      // Body
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+      ctx.fillStyle = colorStr(s.color);
+      ctx.fill();
+    }
+
+    // Flashes
+    for (let i = flashes.length - 1; i >= 0; i--) {
+      const f = flashes[i];
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r * f.life, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255,255,220,${f.life * 0.6})`;
+      ctx.fill();
+      f.life -= 0.04;
+      if (f.life <= 0) flashes.splice(i, 1);
+    }
+
+    ctx.restore();
+  }
+
+  // --- Loop ---
+  let lastTime = 0;
+  function loop(time) {
+    const rawDt = Math.min((time - lastTime) / 1000, 0.05);
+    lastTime = time;
+    const dt = rawDt * parseFloat(speedSlider.value);
+    if (dt > 0) {
+      computeAccelerations();
+      step(dt);
+    }
+    draw();
+    countDisplay.textContent = stars.length;
+    requestAnimationFrame(loop);
+  }
+  computeAccelerations();
+  requestAnimationFrame((t) => { lastTime = t; requestAnimationFrame(loop); });
+
+  // --- Input: Mouse ---
+  let lastClickTime = 0;
+  canvas.addEventListener('click', (e) => {
+    const now = Date.now();
+    const [wx, wy] = screenToWorld(e.clientX, e.clientY);
+    if (now - lastClickTime < 300) {
+      // Double-click: giant star
+      addRandomStar(wx, wy, 200 + Math.random() * 100, false);
+    } else {
+      addRandomStar(wx, wy);
+    }
+    lastClickTime = now;
+  });
+
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const [wx, wy] = screenToWorld(e.clientX, e.clientY);
+    addRandomStar(wx, wy, undefined, true);
+  });
+
+  // --- Input: Scroll zoom ---
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    camZoom = Math.max(0.1, Math.min(20, camZoom * factor));
+  }, { passive: false });
+
+  // --- Input: Touch ---
+  let touches = {};
+  let lastTapTime = 0;
+  let longPressTimer = null;
+  let longPressPos = null;
+  let pinchStartDist = null;
+  let pinchStartZoom = null;
+
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      touches[t.identifier] = { x: t.clientX, y: t.clientY };
+    }
+    if (e.touches.length === 1) {
+      const t = e.touches[0];
+      longPressPos = { x: t.clientX, y: t.clientY };
+      longPressTimer = setTimeout(() => {
+        if (longPressPos) {
+          const [wx, wy] = screenToWorld(longPressPos.x, longPressPos.y);
+          addRandomStar(wx, wy, undefined, true);
+          longPressPos = null;
+        }
+      }, 500);
+    }
+    if (e.touches.length === 2) {
+      clearTimeout(longPressTimer);
+      longPressPos = null;
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinchStartDist = Math.sqrt(dx * dx + dy * dy);
+      pinchStartZoom = camZoom;
+    }
+  }, { passive: false });
+
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (e.touches.length === 2 && pinchStartDist) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      camZoom = Math.max(0.1, Math.min(20, pinchStartZoom * (dist / pinchStartDist)));
+    }
+    // Cancel long press on move
+    if (e.touches.length === 1 && longPressPos) {
+      const t = e.touches[0];
+      const dx = t.clientX - longPressPos.x, dy = t.clientY - longPressPos.y;
+      if (dx * dx + dy * dy > 100) {
+        clearTimeout(longPressTimer);
+        longPressPos = null;
+      }
+    }
+  }, { passive: false });
+
+  canvas.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    clearTimeout(longPressTimer);
+    if (e.touches.length === 0 && e.changedTouches.length === 1 && longPressPos) {
+      const t = e.changedTouches[0];
+      const now = Date.now();
+      const [wx, wy] = screenToWorld(t.clientX, t.clientY);
+      if (now - lastTapTime < 300) {
+        addRandomStar(wx, wy, 200 + Math.random() * 100, false);
+      } else {
+        addRandomStar(wx, wy);
+      }
+      lastTapTime = now;
+      longPressPos = null;
+    }
+    pinchStartDist = null;
+    for (const t of e.changedTouches) delete touches[t.identifier];
+  }, { passive: false });
+
+  // --- Input: Device Orientation (tilt) ---
+  let tiltX = 0, tiltY = 0;
+
+  function handleOrientation(e) {
+    // gamma: left-right tilt (-90 to 90), beta: front-back tilt (-180 to 180)
+    tiltX = Math.max(-1, Math.min(1, (e.gamma || 0) / 30));
+    tiltY = Math.max(-1, Math.min(1, (e.beta || 0) / 30));
+  }
+
+  function requestTilt() {
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      // iOS 13+
+      DeviceOrientationEvent.requestPermission().then((state) => {
+        if (state === 'granted') {
+          window.addEventListener('deviceorientation', handleOrientation);
+        }
+      }).catch(() => {});
+    } else {
+      window.addEventListener('deviceorientation', handleOrientation);
+    }
+  }
+
+  // Request on first touch (iOS requires user gesture)
+  canvas.addEventListener('touchstart', function req() {
+    requestTilt();
+    canvas.removeEventListener('touchstart', req);
+  }, { once: true });
+
+  // Also try immediately for non-iOS
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission !== 'function') {
+    window.addEventListener('deviceorientation', handleOrientation);
+  }
+
+  // --- Clear ---
+  clearBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    stars.length = 0;
+    flashes.length = 0;
+    // Clear canvas fully
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#0a0a0f';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  });
+})();
+</script>
+</body>
+</html>
