@@ -66,6 +66,9 @@
     return [(sx - W / 2) / camZoom + camX, (sy - H / 2) / camZoom + camY];
   }
 
+  // --- Tilt state (must be declared before computeAccelerations references them) ---
+  let tiltX = 0, tiltY = 0;
+
   // --- Stars ---
   const G = 800;
   const SOFTENING = 8;
@@ -365,8 +368,6 @@
   }, { passive: false });
 
   // --- Input: Device Orientation (tilt) ---
-  let tiltX = 0, tiltY = 0;
-
   function handleOrientation(e) {
     // gamma: left-right tilt (-90 to 90), beta: front-back tilt (-180 to 180)
     tiltX = Math.max(-1, Math.min(1, (e.gamma || 0) / 30));
